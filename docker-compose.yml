@@ -1,0 +1,19 @@
+services:
+  pg-backup:
+    build: .
+    image: r2-postgres-backup
+    container_name: r2-postgres-backup
+    env_file:
+      - ${ENV_FILE:-.env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - db
+    restart: unless-stopped
+
+networks:
+  default:
+  db:
+    external: true
+    name: ${DB_NETWORK:-mals-sync-test_mals_net}

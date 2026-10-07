@@ -1,0 +1,56 @@
+# escape=`
+# Windows container for Windows Server 2019 (build 17763).
+# Runs a periodic backup: pg_dump a database and upload the archive to
+# Cloudflare R2 with rclone.
+#
+# The PostgreSQL 18 client (whole bin) is downloaded from EnterpriseDB at build
+# time and baked into the image; there is no runtime mount. The VC++ runtime is
+# installed because the host's runtime is not visible inside the container.
+#
+# NOTE: Windows Server 2019 runs Windows containers only; this is separate
+# from the Linux Dockerfile and cannot run on the same host as Linux images.
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2019
+
+SHELL ["powershell", "-NoProfile", "-Command", "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';"]
+
+# Visual C++ runtime required by the EnterpriseDB pg_dump binaries
+RUN Invoke-WebRequest 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile C:\vc_redist.x64.exe; `
+    Start-Process -FilePath C:\vc_redist.x64.exe -ArgumentList '/install','/quiet','/norestart' -Wait; `
+    Remove-Item C:\vc_redist.x64.exe -Force
+
+# PostgreSQL 18 client, pinned. Extract ONLY pgsql/bin from the EDB zip using
+# .NET ZipArchive: the base image's tar.exe doesn't handle this archive's member
+# filtering reliably (it extracted nothing) and chokes on the space-containing
+# pgAdmin dir. Extracting only bin also avoids pulling in pgAdmin/python.
+RUN Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-18.6-5-windows-x64-binaries.zip' -OutFile C:\pg.zip; `
+    Add-Type -AssemblyName System.IO.Compression.FileSystem; `
+    $zip = [System.IO.Compression.ZipFile]::OpenRead('C:\pg.zip'); `
+    New-Item -ItemType Directory -Force C:\pgsql\bin | Out-Null; `
+    foreach ($e in $zip.Entries) { `
+        if ($e.FullName -like 'pgsql/bin/*' -and -not $e.FullName.EndsWith('/')) { `
+            $dest = Join-Path 'C:\pgsql' $e.FullName.Substring('pgsql/'.Length); `
+            $dir = Split-Path -Parent $dest; `
+            if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }; `
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true) `
+        } `
+    }; `
+    $zip.Dispose(); `
+    Remove-Item C:\pg.zip -Force
+
+# Fail the build if the client is not runnable. Use the full path here rather
+# than setting ENV PATH="...;${PATH}": Windows base images don't reliably expose
+# PATH to the build, so `${PATH}` can expand empty and clobber PATH (breaking
+# later RUN steps). entrypoint.cmd prepends C:\pgsql\bin at runtime instead.
+RUN C:\pgsql\bin\pg_dump.exe --version
+
+# rclone (Windows amd64) for the R2 upload
+RUN Invoke-WebRequest 'https://downloads.rclone.org/rclone-current-windows-amd64.zip' -OutFile C:\rclone.zip; `
+    Expand-Archive -Path C:\rclone.zip -DestinationPath C:\rclone -Force; `
+    $exe = Get-ChildItem -Path C:\rclone -Recurse -Filter rclone.exe | Select-Object -First 1; `
+    Move-Item $exe.FullName C:\Windows\System32\rclone.exe; `
+    Remove-Item -Recurse -Force C:\rclone, C:\rclone.zip
+
+COPY entrypoint.cmd C:\entrypoint.cmd
+
+ENTRYPOINT ["cmd", "/S", "/C", "C:\\entrypoint.cmd"]

@@ -1,0 +1,13 @@
+services:
+  pg-backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.windows
+    image: r2-postgres-backup:windows
+    platform: windows/amd64
+    container_name: r2-postgres-backup
+    env_file:
+      - ${ENV_FILE:-.env}
+    extra_hosts:
+      - "host.docker.internal:${HOST_IP:?Set HOST_IP to the Windows host IPv4 address}"
+    restart: unless-stopped
